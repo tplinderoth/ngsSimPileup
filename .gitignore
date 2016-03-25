@@ -1,0 +1,7 @@
+ngsSimPileup
+*.o
+*.d
+*.cproject
+*.project
+/Debug/
+/Release/
