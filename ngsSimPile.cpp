@@ -1,22 +1,33 @@
 // ngsSimPileup.cpp
 
+/*
+ * TO DO:
+ * (1) add exception handling
+ * (2) add theta parameter to number SNPs (maybe...?)
+ * (3) Random fitness and inbreeding values - and bounds for random variables
+ *
+ * SFS sampling method is untested
+ */
+
 #include <cstdlib>
 #include <cstring>
 #include <time.h>
 #include <iostream>
 #include "simPileup.h"
-#include "generalUtils.h"
 #include "ngsSimPile.h"
 
 int main (int argc, char** argv)
 {
-	srand ((unsigned)time(NULL));
 
 	// declare and initialize variables
 	std::vector<double> altfreq; // alternate allele frequencies for loci
 	std::vector<double> admix; // probability that read comes from locus
+	double inbreed = 0.0; // inbreeding coefficient for locus
+	std::vector< Array<double> > fitness; // relative fitness values for [AA, Aa, aa] genotypes
 	double minfreq = 0.0; // minimum random alternate allele frequency
 	double maxfreq = 1.0; // maximum random alternate allele frequency
+	double minF = 0.0; // minimum inbreeding coefficient
+	double maxF = 1.0; // maximum inbreeding coefficient
 	double coverage = 10.0; // average individual sequencing depth
 	int nind = 0; // number diploid individuals
 	double avgqual = 38.0; // average Phred quality score
@@ -24,21 +35,26 @@ int main (int argc, char** argv)
 	double betab = 0.3; // beta shape parameter for beta distribution on quality scores
 	int qcode = 33; // quality score offset (added to quality score in pileup format)
 	std::string seqname("chr1"); // chromosome name
-	int paralog_sites = 0; // number of paralogous sites to simulate
-	int normal_sites = 0; // number of non-paralogous sites to simulate
+	double theta = 0.01; // population-size scaled mutation rate
+	unsigned int nsites = 0; // number of sites to simulate
 	std::string outfile; // file to dump results to
+	bool foldsfs = false; // use the folded SFS to draw allele frequencies from
 
 	if (argc==1)
 	{
-		info (coverage, minfreq, maxfreq, avgqual, maxqual, betab, qcode, seqname);
+		info (coverage, minfreq, maxfreq, avgqual, maxqual, betab, qcode, seqname, &inbreed, foldsfs);
 		return 0;
 	}
 
 	// read-in, check, and assign inputs
-	int validin = parseInputs (argc, argv, altfreq, admix, minfreq, maxfreq, coverage, nind, avgqual, maxqual, betab, qcode,
-			seqname, paralog_sites, normal_sites, outfile);
-	if (validin)
-		return 0; // terminate
+	int validin = parseInputs(argc, argv, &altfreq, &admix, minfreq, maxfreq, &fitness, &inbreed, minF, maxF, coverage, nind, avgqual, maxqual, betab, qcode, seqname, theta, nsites, outfile, foldsfs);
+	if (validin > 1)
+		return 0;
+	else if (validin)
+	{
+		fprintf(stderr, "--> exiting\n");
+		return 1; // terminate
+	}
 
 	// open output files
 	std::fstream pileout; // create fstream object for pileup results
@@ -56,11 +72,16 @@ int main (int argc, char** argv)
 
 	// generate sequencing data
 
-	if (normal_sites > 0) // simulate normal sites
-		simNormal (normal_sites, minfreq, maxfreq, &admix, &sdat, pileout, parout);
-
-	if (paralog_sites > 0) // simulate paralogous sites
-		simParalog (&altfreq, &admix, paralog_sites, minfreq, maxfreq, &sdat, pileout, parout);
+	if (altfreq.size() > 1) // simulate paralogous sites
+	{
+		fprintf(stderr, "simulating %u paralogous sites\n", nsites);
+		simParalog(nsites, &altfreq, minfreq, maxfreq, &admix, inbreed, &fitness, &sdat, pileout, parout, foldsfs);
+	}
+	else // simulate normal sites
+	{
+		fprintf(stderr, "simulating %u non-paralogous sites\n", nsites);
+		simNormal(nsites, altfreq[0], minfreq, maxfreq, &admix, inbreed, &fitness, &sdat, pileout, parout, foldsfs);
+	}
 
 	// prepare to exit program
 
@@ -72,85 +93,80 @@ int main (int argc, char** argv)
 	return 0;
 }
 
-int parseInputs (int argc, char** argv, std::vector<double>& altfreq, std::vector<double>& admix, double& minfreq, double& maxfreq,
-	double& coverage, int& nind, double& avgqual, double& maxqual, double& betab, int& qcode,
-	std::string& seqname, int& paralog_sites, int& normal_sites, std::string& outfile)
+int parseInputs (int argc, char** argv, std::vector<double>* altfreq, std::vector<double>* admix, double& minfreq, double& maxfreq,
+		std::vector< Array<double> >* fitness, double* inbreed, double& minF, double& maxF, double& coverage, int& nind,double& avgqual, double& maxqual,
+		double& betab, int& qcode, std::string& seqname, double& theta, unsigned int& nsites, std::string& outfile, bool& fold)
 {
 	// read and assign input
 
 	int argpos = 1;
-	double f = -1.0;
-	double m = -1.0;
+
+	// set up container to temporary hold parameter values
+	std::vector<char const*> tmpcontainer;
+	tmpcontainer.reserve(12);
 
 		while (argpos < argc)
 		{
 			if ( strcmp(argv[argpos], "-help") == 0 )
 			{
-				info (coverage, minfreq, maxfreq, avgqual, maxqual, betab, qcode, seqname, 1);
-				return 1;
+				info(coverage, minfreq, maxfreq, avgqual, maxqual, betab, qcode, seqname, inbreed, fold, 1);
+				return 2;
 			}
 			else if ( strcmp(argv[argpos], "-altfreq") == 0 ) // parse alternate allele frequencies
 			{
-				argpos++;
-				while ( *argv[argpos] != '-')
+				++argpos;
+				while (argpos < argc)
 				{
-					if ( isdigit (argv[argpos][0]) ) //*argv[argpos]
-					{
-						f = atof(argv[argpos]);
-						if (f >= 0.0 && f <= 1.0)
-							altfreq.push_back(f);
-						else
-						{
-							fprintf(stderr, "\nNumeric argument to -altfreq not in [0,1] -> exiting\n");
-							return 1; // terminate
-						}
-					}
-					else if ( strcmp(argv[argpos], "R") == 0 || strcmp(argv[argpos], "r") == 0)
-						altfreq.push_back( 82.0 ); // ascii R = 82
-					else
-					{
-						fprintf(stderr, "\nInvalid argument to -altfreq -> exiting\n");
-						return 1; // terminate
-					}
-					argpos++;
-					if (argpos >= argc)
-						break;
+					if (argv[argpos][0] == '-' && static_cast<int>(argv[argpos][0]) + static_cast<int>(argv[argpos][1]) > 102) break;
+					tmpcontainer.push_back(argv[argpos]);
+					++argpos;
 				}
-				altfreq.resize(altfreq.size());
+				if(setAltFreq(&tmpcontainer, altfreq))
+					return 1;
+				tmpcontainer.clear();
 				continue;
 			}
-			if ( strcmp(argv[argpos], "-admix") == 0) // parse read admixture proportions
+			else if ( strcmp(argv[argpos], "-admix") == 0) // parse read admixture proportions
 			{
-				argpos++;
-				while ( *argv[argpos] != '-')
+				++argpos;
+				while (argpos < argc)
 				{
-					if ( isdigit (*argv[argpos]) )
-					{
-						m = atof(argv[argpos]);
-						if (m >= 0.0 && m <= 1.0)
-							admix.push_back(m);
-						else
-						{
-							fprintf(stderr, "\nArgument to -admix not in [0,1] -> exiting\n");
-							return 1; // terminate
-						}
-					}
-					else
-					{
-						fprintf(stderr, "\nInvalid argument to -admix -> exiting\n");
-						return 1; // terminate
-					}
-				argpos++;
-				if (argpos >= argc)
-					break;
+					if (argv[argpos][0] == '-' && static_cast<int>(argv[argpos][0]) + static_cast<int>(argv[argpos][1]) > 102) break;
+					tmpcontainer.push_back(argv[argpos]);
+					++argpos;
 				}
-				admix.resize(admix.size());
+				if (setAdmix(&tmpcontainer, admix))
+					return 1;
+				tmpcontainer.clear();
 				continue;
+			}
+			else if (strcmp(argv[argpos], "-fitness") == 0) // parse relative fitnesses
+			{
+				++argpos;
+				while (argpos < argc)
+				{
+						if (argv[argpos][0] == '-' && static_cast<int>(argv[argpos][0]) + static_cast<int>(argv[argpos][1]) > 102) break;
+						tmpcontainer.push_back(argv[argpos]);
+						++argpos;
+				}
+				if(setFitness(&tmpcontainer, fitness))
+					return 1;
+				tmpcontainer.clear();
+				continue;
+			}
+			else if (strcmp(argv[argpos], "-inbreed") == 0) // parse inbreeding coefficient
+			{
+				if(setInbreeding(argv[argpos+1], inbreed))
+					return 1;
 			}
 			else if ( strcmp(argv[argpos], "-minfreq") == 0 )
 				minfreq = atof(argv[argpos + 1]);
 			else if ( strcmp(argv[argpos], "-maxfreq") == 0 )
 				maxfreq = atof(argv[argpos + 1]);
+			else if ( strcmp(argv[argpos], "-minF") == 0 )
+				minF = atof(argv[argpos+1]);
+			else if ( strcmp(argv[argpos], "-maxF") == 0)
+				maxF = atof(argv[argpos+1]);
 			else if ( strcmp(argv[argpos], "-coverage") == 0 )
 				coverage = atof( argv[argpos + 1]);
 			else if ( strcmp(argv[argpos], "-nind") == 0 )
@@ -163,14 +179,16 @@ int parseInputs (int argc, char** argv, std::vector<double>& altfreq, std::vecto
 				betab = atof(argv[argpos + 1]);
 			else if ( strcmp( argv[argpos], "-qcode") == 0 )
 				qcode = atoi(argv[argpos + 1]);
-			else if ( strcmp( argv[argpos], "-paralog_sites") == 0)
-				paralog_sites = atoi(argv[argpos + 1]);
-			else if ( strcmp( argv[argpos], "-normal_sites") == 0 )
-				normal_sites = atoi(argv[argpos + 1]);
+			else if ( strcmp( argv[argpos], "-nsites") == 0)
+				nsites = atoi(argv[argpos + 1]);
 			else if ( strcmp ( argv[argpos], "-seqname") == 0 )
 				seqname = argv[argpos + 1];
+			else if ( strcmp(argv[argpos], "-theta") == 0)
+				theta = atof(argv[argpos+1]);
 			else if ( strcmp( argv[argpos], "-outfile") == 0 )
 				outfile = argv[argpos + 1];
+			else if ( strcmp(argv[argpos], "-foldsfs") == 0)
+				fold = atoi(argv[argpos + 1]);
 			else
 			{
 				fprintf(stderr, "\nUnknown argument: %s\n", argv[argpos]);
@@ -179,174 +197,396 @@ int parseInputs (int argc, char** argv, std::vector<double>& altfreq, std::vecto
 			argpos += 2;
 		}
 
-		// check user inputs
+		// set default parameter values
+		if (setDefaultVals(admix, altfreq, inbreed, fitness))
+			return 1;
 
+
+		// check user inputs
 		if (minfreq < 0.0 || minfreq > 1.0)
 		{
-			fprintf(stderr, "\n-minfreq out of bounds -> exiting\n");
+			fprintf(stderr, "\n-minfreq out of boundsn");
 			return 1;
 		}
 		if (maxfreq < 0.0 || maxfreq > 1.0)
 		{
-			fprintf(stderr, "\n-maxfreq out of bounds -> exiting\n");
+			fprintf(stderr, "\n-maxfreq out of bounds\n");
+			return 1;
+		}
+		if (minF < 0.0 || minF > 1.0)
+		{
+			fprintf(stderr, "\n-minF out of bounds\n");
+			return 1;
+		}
+		if (maxF < 0.0 || maxF > 1.0)
+		{
+			fprintf(stderr, "\n-maxF out of bounds\n");
 			return 1;
 		}
 		if (minfreq > maxfreq)
 		{
-			fprintf(stderr, "\n-minfreq greater than -maxfreq -> exiting\n");
+			fprintf(stderr, "\n-minfreq greater than -maxfreq\n");
 			return 1;
 		}
 		if (coverage <= 0)
 		{
-			fprintf(stderr, "\n-coverage must greater than zero -> exiting\n");
+			fprintf(stderr, "\n-coverage must greater than zero\n");
 			return 1;
 		}
 		if (nind <= 0 )
 		{
-			fprintf(stderr, "\n-nind must be a positive integer -> exiting\n");
+			fprintf(stderr, "\n-nind must be a positive integer\n");
 			return 1;
 		}
 		if (avgqual <= 0)
 		{
-			fprintf(stderr, "\n-avgqual must be a positive integer -> exiting\n");
+			fprintf(stderr, "\n-avgqual must be a positive integer\n");
 			return 1;
 		}
 		if ( qcode != 33)
 			if ( qcode != 64)
 			{
-				fprintf(stderr, "\n-qcode must be 33 or 64 -> exiting\n");
+				fprintf(stderr, "\n-qcode must be 33 or 64\n");
 				return 1;
 			}
 		if (maxqual <= 0 || maxqual < avgqual)
 		{
-			fprintf(stderr, "\n-maxqual must be a positive integer at least as great as avgqual -> exiting\n");
+			fprintf(stderr, "\n-maxqual must be a positive integer at least as great as avgqual\n");
 			return 1;
 		}
 		if ( qcode + maxqual > 126 )
 		{
-			fprintf(stderr, "\noffset maximum quality score exceeds 126 -> exiting\n");
+			fprintf(stderr, "\noffset maximum quality score exceeds 126\n");
 			return 1;
 		}
 		if ( betab <= 0 )
 		{
-			fprintf(stderr, "\n-betab must be greater than zero -> exiting\n");
+			fprintf(stderr, "\n-betab must be greater than zero\n");
 			return 1;
 		}
-		if ( paralog_sites < 0)
+		if ( nsites < 1)
 		{
-			fprintf(stderr, "\n-paralog_sites less than zero -> exiting\n");
+			fprintf(stderr, "\n-nsites should be > 0\n");
 			return 1;
 		}
-		if ( normal_sites < 0)
+		if (theta <= 0)
 		{
-			fprintf(stderr, "\n-normal_sites less than zero -> exiting\n");
-			return 1;
-		}
-		if ( paralog_sites + normal_sites <= 0)
-		{
-			fprintf(stderr, "\nNo sites to simulate -> exiting\n");
-			return 1;
-		}
-		if ( paralog_sites > 0 && altfreq.empty())
-		{
-			fprintf(stderr, "\nMust supply -altfreq for paralogous sites -> exiting\n");
-			return 1;
-		}
-		if (!admix.empty())
-		{
-			if (!altfreq.empty() && admix.size() != altfreq.size())
-			{
-				fprintf(stderr, "\nNumber of arguments for -altfreq and -admix differ -> exiting\n");
-				return 1;
-			}
-			if (altfreq.size() == 1 || paralog_sites == 0)
-			{
-				if (admix[0] != 1.0)
-				{
-					admix[0] = 1.0;
-					fprintf(stderr, "\nNo duplicates, so admixture proportion set to 1.0\n");
-				}
-			}
-			double admixsum = 0;
-			for (std::vector<double>::const_iterator i = admix.begin(); i != admix.end(); ++i)
-				admixsum += *i;
-			if (admixsum != 1.0)
-			{
-				fprintf(stderr, "-admix arguments must sum to 1 -> exiting\n");
-				return 1;
-			}
-		}
-		else
-		{
-			fprintf(stderr, "Must supply admixture proportions with -admix -> exiting\n");
+			fprintf(stderr, "\n-theta must be > 0\n");
 			return 1;
 		}
 		if ( outfile.empty())
 		{
-			fprintf(stderr, "\nMust supply -outfile -> exiting\n");
+			fprintf(stderr, "\nMust supply -outfile\n");
 			return 1;
+		}
+		if (fold != 0)
+		{
+			if (fold != 1)
+			{
+				fprintf(stderr, "\n-fold must be 0 or 1\n");
+				return 1;
+			}
 		}
 
 		return 0;
 }
 
-void simNormal (int nsites, double lbound, double ubound, std::vector<double>* mvec, SiteData* dat, std::fstream& seqfile, std::fstream& parfile)
-{
-	std::vector<double> f (1);
 
-	for (int i = 0; i < nsites; i++)
+int setAltFreq (std::vector<const char*>* fchar, std::vector<double>* fvals)
+{
+	if (fchar->size() < 1)
 	{
-		f[0] = decimalUnifBound(lbound, ubound);
-		dat->assignSeqData(f[0]);
+		fprintf(stderr, "No allele frequencies specified in call to setAltFreq\n");
+		return 1;
+	}
+
+	double f = 0.0;
+	fvals->resize(fchar->size());
+	for (unsigned int i = 0; i < fvals->size(); ++i)
+	{
+		if ( isdigit((*fchar)[i][0]) )
+		{
+			f = atof((*fchar)[i]);
+			if (f >= 0.0 && f <= 1.0)
+				(*fvals)[i] = f;
+			else
+			{
+				fprintf(stderr, "\nNumeric argument to -altfreq not in [0,1]\n");
+				return 1;
+			}
+		}
+		else if ( strcmp((*fchar)[i], "R") == 0 || strcmp((*fchar)[i], "r") == 0)
+			(*fvals)[i] = 82.0; // ascii R = 82
+		else if ( strcmp((*fchar)[i], "S") == 0 || strcmp((*fchar)[i], "s") == 0)
+			(*fvals)[i] = 83.0; //ascii S = 83
+		else
+		{
+			fprintf(stderr, "\nInvalid argument to -altfreq\n");
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+int setAdmix (std::vector<const char*>* achar, std::vector<double>* avals)
+{
+	if (achar->size() < 1)
+	{
+		fprintf(stderr, "No admixture proportions specified in call to setAdmix\n");
+		return 1;
+	}
+
+	double m = 0.0;
+	avals->resize(achar->size());
+	for (unsigned int i = 0; i < avals->size(); ++i)
+	{
+		if ( isdigit((*achar)[i][0]) )
+		{
+			m = atof((*achar)[i]);
+			if (m >= 0.0 && m <= 1.0)
+				(*avals)[i] = m;
+			else
+			{
+				fprintf(stderr, "Values passed to -admix must be in [0,1]\n");
+				return 1;
+			}
+		}
+	}
+
+	return 0;
+}
+
+int setFitness (std::vector<const char*>* wchar, std::vector< Array<double> >* wvals)
+{
+	if (wchar->size() % 3)
+	{
+		fprintf(stderr, "Number of supplied fitness values not a multiple of 3 in call to setFitness\n");
+		return 1;
+	}
+
+	wvals->resize(wchar->size()/3);
+	double w = 0.0;
+	unsigned int k = 0;
+	for (unsigned int i = 0; i < wvals->size(); ++i)
+	{
+		(*wvals)[i].setSize(3);
+		for (unsigned int j = 0; j < 3; ++j)
+		{
+			if ( isdigit((*wchar)[k][0]) )
+			{
+				w = atof((*wchar)[k]);
+				if (w >= 0.0 && w <= 1.0)
+					(*wvals)[i][j] = w;
+				else
+				{
+					fprintf(stderr, "\nfitness values must be in range [0,1]\n");
+					return 1;
+				}
+			}
+			else
+			{
+				fprintf(stderr, "\nfitness values must be numeric\n");
+				return 1;
+			}
+			++k;
+		}
+	}
+
+	return 0;
+}
+
+int setInbreeding(const char* Fchar, double* Fval)
+{
+	if (Fchar)
+	{
+		if ( isdigit(Fchar[0]))
+		{
+			*Fval = atof(Fchar);
+			if (*Fval > 1.0 || *Fval < 0.0)
+			{
+				fprintf(stderr, "\ninbreeding coefficient outside of range [0,1]\n");
+				return 1;
+			}
+		}
+		else if (strcmp(Fchar, "R") == 0 || strcmp(Fchar, "r") == 0)
+		{
+			*Fval = 82.0; // ascii R = 82
+		}
+		else
+		{
+			fprintf(stderr, "\nInvalid argument to -inbreed\n");
+			return 1;
+		}
+	}
+	else
+	{
+		fprintf(stderr, "No inbreeding value provided in call to setInbreeding\n");
+		return 1;
+	}
+
+	return 0;
+}
+
+int setDefaultVals (std::vector<double>* admix, std::vector<double>* altfreq, double* inbreed, std::vector< Array<double> >* fitness)
+{
+	unsigned int i = 0;
+
+	// default alternative frequency = random
+	if (altfreq->size() < 1)
+	{
+		altfreq->push_back(82.0);
+		fprintf(stderr, "Assuming random allele frequencies for single copy sites\n");
+	}
+
+	// default admixture proportion = 1/(number loci)
+	if (admix->size() < 1)
+	{
+		admix->resize(altfreq->size());
+		if (altfreq->size() > 1)
+			fprintf(stderr, "Assuming equal contribution of reads from each copy\n");
+
+		for (i=0; i < admix->size(); ++i)
+			(*admix)[i] = 1.0/static_cast<double>(admix->size());
+	}
+
+	if (admix->size() != altfreq->size())
+	{
+		fprintf(stderr, "Number of admixture proportions and loci differ\n");
+		return 1;
+	}
+
+	if (vecsum(*admix) != 1.0)
+	{
+		fprintf(stderr, "Admixture proportions must sum to 1\n");
+		return 1;
+	}
+
+	// default F = 0
+	if (!inbreed)
+		*inbreed = 0.0;
+
+	// default fitness is uniform (i.e. no differential fitness)
+	if (fitness->size() < 1)
+		fitness->resize(altfreq->size());
+
+	if (fitness->size() != altfreq->size())
+	{
+		fprintf(stderr, "(Number of fitness values)/3 does not equal the number of loci\n");
+		return 1;
+	}
+
+	for (i=0; i < altfreq->size(); ++i)
+	{
+		if ((*fitness)[i].size() < 3)
+		{
+			(*fitness)[i].setSize(3);
+			for (unsigned int j=0; j < 3; ++j)
+				(*fitness)[i][j] = 1.0;
+		}
+	}
+
+	return 0;
+}
+
+void simNormal (unsigned int nsites, double altfreq, double lbound, double ubound, std::vector<double>* mvec, const double inbreed,
+		std::vector< Array<double> >* fitness, SiteData* dat, std::fstream& seqfile, std::fstream& parfile, bool foldsfs)
+{
+	// ADD EXCEPTION HANDLING
+	std::vector<double> f (1);
+	SFS sfs(static_cast<unsigned int>(dat->getIndN()), foldsfs);
+
+	for (unsigned int i = 0; i < nsites; ++i)
+	{
+		f[0] = alleleFreq(altfreq, lbound, ubound, &sfs);
+		dat->assignSeqData(f[0], inbreed, &(*fitness)[0]);
 		dat->printSite(seqfile, dat->code);
-		dat->printParam(parfile, &f, mvec); // print to parameter file
+		dat->printParam(parfile, &f, mvec, inbreed, fitness); // print to parameter file
 		dat->pos++;
 	}
 }
 
-void simParalog (std::vector<double>* fvec, std::vector<double>* mvec, int nsites, double lbound, double ubound, SiteData* dat, std::fstream& seqfile, std::fstream& parfile)
+void simParalog (unsigned int nsites, std::vector<double>* fvec, double lbound, double ubound, std::vector<double>* mvec, const double inbreed,
+		std::vector< Array<double> >* fitness, SiteData* dat, std::fstream& seqfile, std::fstream& parfile, bool foldsfs)
 {
 	std::vector<double> infreq (fvec->size());
 	unsigned int locus = 0;
+	SFS sfs(static_cast<unsigned int>(dat->getIndN()), foldsfs);
 
-	for (int i = 0; i < nsites; i++)
+	for (unsigned int i = 0; i < nsites; ++i)
 	{
-		for (locus = 0; locus < fvec->size(); locus++)
-		{
-			if ((*fvec)[locus] == 82.0) // random
-				infreq[locus] = decimalUnifBound(lbound, ubound);
-			else
-				infreq[locus] = (*fvec)[locus];
-		}
+		for (locus = 0; locus < fvec->size(); ++locus)
+			infreq[locus] = alleleFreq((*fvec)[locus], lbound, ubound, &sfs);
 
-		dat->doParalog(&infreq, mvec);
+		dat->doParalog(&infreq, inbreed, fitness, mvec);
 		dat->printSite(seqfile, dat->code); // print pileup file
-		dat->printParam(parfile, &infreq, mvec); // print to parameter file
+		dat->printParam(parfile, &infreq, mvec, inbreed, fitness); // print to parameter file
 		dat->pos++;
 	}
 }
 
-void info (const double& cov, const double& minfreq, const double&maxfreq, const double& avgqual, const double& maxqual,
-		const double& beta, const double& encode, const std::string& name, int help, const char* v)
+double alleleFreq (double freq, double lobound, double upbound, SFS* sfs)
+{
+	// ADD EXCEPTION HANDLING
+	double f;
+	int sample_thresh = 1000;
+	int n = 0;
+
+	if (freq == 82.0)
+		f = decimalUnifBound(lobound, upbound);
+	else if (freq == 83.0)
+	{
+		if (upbound == lobound)
+		{
+			fprintf(stderr, "Allele frequency range too narrow for SFS sampling method\n");
+			exit(EXIT_FAILURE);
+		}
+		n = 0;
+		do
+		{
+			f = sfs->rfreq();
+			++n;
+			if (n > sample_thresh)
+				fprintf(stderr, "SFS sampling attempts exceed %i -> consider widening allele frequency bounds\n", sample_thresh);
+		} while (f > upbound || f < lobound);
+	}
+	else
+	{
+		if (freq >= 0.0 && freq <= 1.0)
+			f = freq;
+		else
+		{
+			fprintf(stderr, "Allele frequency %f out of [0,1] range\n", freq);
+			exit(EXIT_FAILURE);
+		}
+	}
+
+	return f;
+}
+
+void info (const double& cov, const double& minfreq, const double& maxfreq, const double& avgqual, const double& maxqual, const double& beta,
+		const double& encode, const std::string& name, const double* F, const bool& foldsfs, int help, const char* v)
 {
 	std::cerr << "\nngsSimPileup version " << v << "\n\nInput:\n"
 	<< "\n-nind INT number of diploid individuals"
-	<< "\n-coverage DOUBLE average per-site sequencing depth [10.0]"
-	<< "\n-normal_sites INT number of normal sites to simulate"
-	<< "\n-paralog_sites INT number of paralogous sites to simulate"
-	<< "\n-minfreq DOUBLE minimum alternate allele frequency [0]"
-	<< "\n-maxfreq DOUBLE maximum alternate allele frequency [1.0]"
-	<< "\n-altfreq DOUBLE|R vector of alternate allele frequencies for paralogous sites (use 'R' for random frequency)"
-	<< "\n-admix DOUBLE vector of probabilities that a read comes from the locus with given alternate allele frequency"
-	<< "\n-avgqual DOUBLE average Phred read quality [38.0]"
-	<< "\n-maxqual DOUBLE maximum Phred read quality [41.0]"
-	<< "\n-betab DOUBLE shape parameter > 0 for quality score distribution (beta dist) [0.3]"
-	<< "\n-qcode 33|64 quality score encoding; 64 for illumina v1.3+ or 33 for illumina v1.8+ [33]"
-	<< "\n-seqname STRING name of chromosome/contig [chr1]"
+	<< "\n-coverage DOUBLE average per-site sequencing depth [" << cov << "]"
+	<< "\n-nsites INT number of sites to simulate"
+	<< "\n-minfreq DOUBLE minimum alternate allele frequency [" << minfreq << "]"
+	<< "\n-maxfreq DOUBLE maximum alternate allele frequency [" << maxfreq << "]"
+	<< "\n-altfreq DOUBLE|R|S vector of alternate allele frequencies for paralogous sites ('R': random frequency, F: draw frequency from SFS)"
+	<< "\n-foldsfs 0|1 draw allele frequencies from unfolded (0) or folded (1) SFS [" << foldsfs << "]"
+	<< "\n-admix DOUBLE vector of probabilities that a read comes from the locus with given alternate allele frequency [1/number_copies]"
+	<< "\n-inbreed DOUBLE inbreeding coefficient (F) [" << *F << "]"
+	<< "\n-fitness DOUBLE vector of fitness values ranging [0,1] for reference homozygotes, heterozygotes, and alternate homozygotes for each locus [equal fitness]"
+	<< "\n-avgqual DOUBLE average Phred read quality [" << avgqual << "]"
+	<< "\n-maxqual DOUBLE maximum Phred read quality [" << maxqual << "]"
+	<< "\n-betab DOUBLE shape parameter > 0 for beta-distributed quality scores [" << beta << "]"
+	<< "\n-qcode 33|64 quality score encoding; 64 for illumina v1.3+ or 33 for illumina v1.8+ [" << encode << "]"
+	<< "\n-seqname STRING name of chromosome/contig [" << name << "]"
 	<< "\n-outfile FILE output file"
 	<< "\n\noutput:\n"
 	<< "\n.param file fields:"
-	<< "\n(1) sequence name (2) position (3) probability read comes from locus (4) alternate allele frequency for locus\n"
+	<< "\n(1) sequence name (2) position (3) probability read comes from locus (4) alternate allele frequency (5) genotype fitnesses (6) inbreeding coefficient\n"
 	<< "\n";
 
 	if (help)
@@ -362,6 +602,7 @@ void info (const double& cov, const double& minfreq, const double&maxfreq, const
 	<< "locus4: alt allele freq of 0.35 and P(read comes from locus 4) = 0.2\n\n"
 	<< "-betab provides the beta shape parameter for a beta distribution which models the quality score distribution:\n"
 	<< "a smaller value skews the distribution towards the maximum quality score\n"
-	<< "a larger value makes the distribution more 'normal' around the average quality score\n\n";
+	<< "a larger value makes the distribution more 'normal' around the average quality score\n\n"
+	<< "-fitness 1.0 1.0 1.0 0.4 1.0 0.6 would indicate that all genotypes for locus 1 have equal fitness and heterozygote advantage at locus 2\n";
 	}
 }

@@ -2,7 +2,6 @@
 // version 0.0.5
 
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <sys/stat.h>
@@ -109,4 +108,28 @@ std::vector<std::string> split (const std::string& s, char delim)
 double decimalUnifBound (double min, double max )
 {
         return rand() / (static_cast<double>(RAND_MAX) + 1) * (max - min) + min;
+}
+
+AssertStyleException::AssertStyleException(const char* err)
+        : _error(err)
+{}
+
+const char* AssertStyleException::what() const throw()
+{
+        std::stringstream message;
+        message << "Assert type exception occurred:\n";
+        if (_error) message << _error;
+        return message.str().c_str();
+}
+
+PreConditionException::PreConditionException(const char* err)
+	: AssertStyleException(err)
+{}
+
+const char* PreConditionException::what() const throw()
+{
+        std::stringstream message;
+        message << "Precondition exception occurred:\n";
+        if (_error) message << _error;
+        return message.str().c_str();
 }

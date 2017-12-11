@@ -4,18 +4,27 @@
 #define NGSSIMPILE_H_
 
 #include <vector>
+#include "generalUtils.h"
+#include "SFS.h"
 
-const char* version = "0.0.6"; // version 9 Feb 2015
+const char* version = "0.1.0"; // version 7 Dec 2017
 
 // FUNCTION PROTOTYPES
 
-int parseInputs (int argc, char** argv, std::vector<double>& altfreq, std::vector<double>& admix, double& minfreq, double& maxfreq,
-double& coverage, int& nind, double& avgqual, double& maxqual, double& betab, int& qcode,
-std::string& seqname, int& paralog_sites, int& normal_sites, std::string& outfile);
-void simNormal (int nsites, double lbound, double ubound, std::vector<double>* mvec, SiteData* dat, std::fstream& seqfile, std::fstream& parfile);
-void simParalog (std::vector<double>* fvec, std::vector<double>* mvec, int nsites, double lbound, double ubound, SiteData* dat,
-std::fstream& seqfile, std::fstream& parfile);
-void info (const double& cov, const double& minfreq, const double&maxfreq, const double& avgqual, const double& maxqual,
-		const double& beta, const double& encode, const std::string& name, int help = 0, const char* v = version);
+int parseInputs (int argc, char** argv, std::vector<double>* altfreq, std::vector<double>* admix, double& minfreq, double& maxfreq,
+		std::vector< Array<double> >* fitness, double* inbreed, double& minF, double& maxF, double& coverage, int& nind,double& avgqual, double& maxqual,
+		double& betab, int& qcode, std::string& seqname, double& theta, unsigned int& nsites, std::string& outfile, bool& fold);
+int setFitness (std::vector<const char*>* wchar, std::vector< Array<double> >* wvals);
+int setInbreeding(const char* Fchar, double* Fval);
+int setAltFreq (std::vector<const char*>* fchar, std::vector<double>* fvals);
+int setAdmix (std::vector<const char*>* achar, std::vector<double>* avals);
+int setDefaultVals (std::vector<double>* admix, std::vector<double>* altfreq, double* inbreed, std::vector< Array<double> >* fitness);
+void simNormal (unsigned int nsites, double altfreq, double lbound, double ubound, std::vector<double>* mvec, const double inbreed,
+		std::vector< Array<double> >* fitness, SiteData* dat, std::fstream& seqfile, std::fstream& parfile, bool foldsfs);
+void simParalog (unsigned int nsites, std::vector<double>* fvec, double lbound, double ubound, std::vector<double>* mvec, const double inbreed,
+		std::vector< Array<double> >* fitness, SiteData* dat, std::fstream& seqfile, std::fstream& parfile, bool foldsfs);
+double alleleFreq (double freq, double lobound, double upbound, SFS* sfs); // draw allele frequency
+void info (const double& cov, const double& minfreq, const double& maxfreq, const double& avgqual, const double& maxqual, const double& beta,
+		const double& encode, const std::string& name, const double* F, const bool& foldsfs, int help = 0, const char* v = version);
 
 #endif /* NGSSIMPILE_H_ */

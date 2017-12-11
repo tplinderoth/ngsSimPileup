@@ -13,19 +13,22 @@
 // FUNCTION DEFINITIONS
 
 // SiteData constructor
-SiteData::SiteData (double depth, int n, double avgq, double maxq, double beta_b, int qoffset)
+SiteData::SiteData (double depth, int n, double avgq, double maxq, double beta_b, int qoffset, unsigned int* randseed)
 	: name ("chr"),
 	  pos (0),
-	  dupReadProb(0.0),
-	  swapProb(0.0)
+	  swapProb(0.0),
+	  seed(std::chrono::system_clock::now().time_since_epoch().count())
 
 {
+	if (randseed) seed = *randseed;
+	randomgen.seed(seed);
+
 	cov = getCoverage(depth);
 	nind = getInds(n);
 	qmax = getMaxQ(maxq);
 	getBetaPar(avgq, beta_b, betap);
 	code = getCode(qoffset);
-	realcov.resize(nind);
+	_covvec.resize(nind, 0);
 }
 
 // SiteData::getCoverage assigns coverage
@@ -114,36 +117,38 @@ double SiteData::getDupProb (std::vector<double>* admixpro)
 }
 
 // SiteData::genSeqData generates reads and quality scores for a site
-std::vector<rdat> SiteData::genSeqData (const double afreq, const double pdup)
+std::vector<rdat> SiteData::genSeqData (const double afreq, const double inbreedcoef, const Array<double>* fitness, const unsigned int copyn, const double pdup)
 {
-	if (afreq < 0.0 || afreq > 1.0)
-	{
-		fprintf(stderr, "Alternate allele frequency out of bounds in call to SiteData::genSeqData -> exiting\n");
-		exit(EXIT_FAILURE);
-	}
-
 	int ind_geno [3] = {}; // # ref homo, # het, # alt homo
-	getGeno(ind_geno, nind, afreq);
+	getGeno(ind_geno, nind, afreq, inbreedcoef, fitness);
 	int readn = 0; // number of reads for an individual
 	int ind = 0;
 	int q; // quality score
 	std::vector<rdat> data (nind); // read data
+	static std::poisson_distribution<int> poissdist(cov * copyn);
+	static int prevpos = -1;
+
+	if (pdup > 1.0 || pdup < 0.0)
+	{
+		fprintf(stderr, "Invalid admixture proportion in SiteData::genSeqData -> exiting\n");
+		exit(EXIT_FAILURE);
+	}
 
 	for (int i = 0; i < 3; i++) // go over all 3 genotype configurations
+	{
 		for (int j = 0; j < ind_geno[i]; j++) // go over number of individuals in current genotype
 		{
-			if (pdup == 1.0)
+			if (prevpos  != pos) _covvec[ind] = poissdist(randomgen);
+			if (pdup < 1.0)
 			{
-				readn = static_cast<int>(poisson(cov));
-				realcov[ind] = readn;
+				readn = 0;
+				for (int k = 0; k < _covvec[ind]; ++k)
+				{
+					if (rand_0_1() < pdup) ++readn;
+				}
 			}
-			else if (pdup < 1.0 && pdup >= 0)
-				readn = floor(pdup * (static_cast<double>(realcov[ind]) + (dupReadProb * static_cast<double>(realcov[ind])) / (1.0 - dupReadProb)) + 0.5);
 			else
-			{
-				fprintf(stderr, "Invalid admixture proportion in SiteData::genSeqData -> exiting\n");
-				exit(EXIT_FAILURE);
-			}
+				readn = _covvec[ind];
 			if (readn == 0) // missing data for individual
 				data[ind].insert( rdat::value_type ( '*', '*') );
 			else
@@ -158,7 +163,7 @@ std::vector<rdat> SiteData::genSeqData (const double afreq, const double pdup)
 						data[ind].insert( rdat::value_type ( q, 1 ) );
 					else // het
 					{
-						if (unif() <= 0.5)
+						if (rand_0_1() < 0.5)
 							data[ind].insert( rdat::value_type ( q, 0 ) );
 						else
 							data[ind].insert( rdat::value_type ( q, 1 ) );
@@ -168,18 +173,66 @@ std::vector<rdat> SiteData::genSeqData (const double afreq, const double pdup)
 
 			ind++;
 		}
+	}
 
 	doError(&data); // introduce sequencing errors
+	prevpos = pos;
 
 	return data;
 }
 
 // SiteData::getGeno calculates genotype numbers based on HWE
-void SiteData::getGeno (int genoNum [], const int n, const double f)
+void SiteData::getGeno (int genoNum [], double n, const double p, const double F, const Array<double>* w)
 {
-	double rhomo = (double)n * (1 - f) * (1 - f);
-	double het = (double)n * 2 * f * (1 - f);
-	double ahomo = (double)n * f * f;
+	// ADD EXCEPTION HANDLING FOR CHECKING ALLELE FREQ, INBREEDING COEF, FITNESS
+
+	if (p < 0.0 || p > 1.0)
+	{
+		fprintf(stderr, "Alternate allele frequency out of [0,1] range in call to SiteData::genGeno -> exiting\n");
+		exit(EXIT_FAILURE);
+	}
+
+	if (F < 0.0 || F > 1.0)
+	{
+		fprintf(stderr, "Inbreeding coefficient out of [0,1] range in call to SiteData::getGeno -> exiting\n");
+		exit(EXIT_FAILURE);
+	}
+
+	if (w->size() == 3)
+	{
+		for(unsigned int i=0; i<3; ++i)
+		{
+			if ((*w)[i] < 0.0 || (*w)[i] > 1.0)
+			{
+				fprintf(stderr, "Fitness values out of [0,1] range in call to SiteData::getGeno -> exiting\n");
+				exit(EXIT_FAILURE);
+			}
+		}
+	}
+	else
+	{
+		fprintf(stderr, "Missing fitness values in call to SiteData::getGeno -> exiting\n");
+		exit(EXIT_FAILURE);
+	}
+
+
+	double q = 1.0 - p;
+
+	// genotype frequencies accounting for inbreeding and fitness
+	double paa = (*w)[2] * ( q * q * (1.0 - F) + q * F );
+	double pAa = (*w)[1] * ( 2.0 * p * q * (1.0 - F) );
+	double pAA = (*w)[0] * ( p * p * (1.0 - F) + p * F );
+
+	// calculate average fitness and scale the genotype frequencies
+	double wbar = paa + pAa + pAA;
+	paa /= wbar;
+	pAa /= wbar;
+	pAA /= wbar;
+
+	// expected number of each genotype
+	double rhomo = n * paa;
+	double het = n * pAa;
+	double ahomo = n * pAA;
 
 	genoNum[0] = static_cast<int>( floor(rhomo + 0.5) );
 	genoNum[1] = static_cast<int>( floor(het + 0.5) );
@@ -255,14 +308,14 @@ void SiteData::getGeno (int genoNum [], const int n, const double f)
 }
 
 // SiteData::assignSeqData assigns sequence data to member object seqdat
-void SiteData::assignSeqData (const double altfreq)
+void SiteData::assignSeqData (const double altfreq, const double inbreedcoef, const Array<double>* fitness)
 {
 	seqdat.resize(nind);
-	seqdat = genSeqData(altfreq);
+	seqdat = genSeqData(altfreq, inbreedcoef, fitness);
 }
 
 // SiteData::doParalog generates reads and quality scores for a site comprised of paralogs - see simPileup.h
-void SiteData::doParalog (std::vector<double>* altf, std::vector<double>* admixpro)
+void SiteData::doParalog (std::vector<double>* altf, const double inbreedcoef, std::vector< Array<double> >* fitness, std::vector<double>* admixpro)
 {
 	if (altf->size() < 2)
 	{
@@ -275,16 +328,18 @@ void SiteData::doParalog (std::vector<double>* altf, std::vector<double>* admixp
 		exit(EXIT_FAILURE);
 	}
 
-	seqdat = genSeqData((*altf)[0]); // get seq data for locus 1
-
 	std::vector<rdat> dup;
-	dupReadProb = getDupProb(admixpro);
 
 	//generate data for duplicate loci
-	for (unsigned int i = 1; i < altf->size(); i++)
+	for (unsigned int i = 0; i < altf->size(); i++)
 	{
-		dup = genSeqData((*altf)[i], (*admixpro)[i]); // get seq data for duplicate
-		mergeLoci(&dup); //combine data with seqdat member
+		if (i == 0)
+			seqdat = genSeqData((*altf)[i], inbreedcoef, &(*fitness)[i], altf->size(), (*admixpro)[i]); // get seq data for locus 1
+		else
+		{
+			dup = genSeqData((*altf)[i], inbreedcoef, &(*fitness)[i], altf->size(), (*admixpro)[i]); // get seq data for duplicates
+			mergeLoci(&dup); //combine data with seqdat member
+		}
 	}
 }
 
@@ -314,10 +369,7 @@ void SiteData::mergeLoci (std::vector<rdat>* locus2)
 				}
 			}
 			else
-			{
-				for (dat2 = ind2->begin(); dat2 != ind2->end(); ++dat2)
-					seqdat[i].insert(*dat2);
-			}
+				seqdat[i].insert(ind2->begin(), ind2->end());
 
 			i++;
 		}
@@ -379,27 +431,27 @@ void SiteData::doError ( std::vector<rdat>* data )
 			if (dat->second == '*') // missing data for individual
 				continue;
 
-			x = unif(); // draw random number
-			epsilon = pow(10.0, -1 * static_cast<double>(dat->first) / 10.0);
+			x = rand_0_1(); // draw random number
+			epsilon = pow(10.0, -static_cast<double>(dat->first)/10.0);
 
 			if (x <= epsilon)
 			{
-				err_readp = unif(); // 1/3 probability of picking either of the wrong reads
+				err_readp = rand_0_1(); // 1/3 probability of picking either of the wrong reads
 
 				if (dat->second == 0) // ref change
 				{
-					if (err_readp <= (double)1/3)
+					if (err_readp <= static_cast<double>(1)/3)
 						dat->second = 2; // ref error read1
-					else if (err_readp > (double)2/3)
+					else if (err_readp > static_cast<double>(2)/3)
 						dat->second = 3; // ref error read2
 					else
 						dat->second = 4; // ref error read3
 				}
 				else // alt change
 				{
-					if (err_readp <= (double)1/3)
+					if (err_readp <= static_cast<double>(1)/3)
 						dat->second = 5; // alt error read1
-					else if (err_readp > (double)2/3)
+					else if (err_readp > static_cast<double>(2)/3)
 						dat->second = 6; // alt error read2
 					else
 						dat->second = 7; // alt error read3
@@ -487,13 +539,17 @@ void SiteData::printSite (std::fstream& out, int code)
 }
 
 // SiteData::printParam prints simulation parameters for site
-void SiteData::printParam (std::fstream& parfile, std::vector<double>* f, std::vector<double>* m)
+void SiteData::printParam (std::fstream& parfile, std::vector<double>* f, std::vector<double>* m, const double F, std::vector< Array<double> >* w)
 {
+	// prints (1) seqid, (2) position, (3) admixture proportions, (4) allele frequency, (5) fitness values, (6) inbreeding coefficient
+
 	parfile.width(12);
 	parfile << std::left << name << "\t";
 	parfile.width(12);
 	parfile << std::left << pos << "\t";
 	unsigned int i = 0;
+
+	// print admixture proportion
 	if (f->size() == 1)
 	{
 		parfile.width(12);
@@ -517,19 +573,43 @@ void SiteData::printParam (std::fstream& parfile, std::vector<double>* f, std::v
 		fprintf(stderr, "No allele frequency provided to SiteData::printParam -> exiting\n");
 		exit(EXIT_FAILURE);
 	}
+
+	// print allele frequency
 	for (i = 0; i < f->size(); i++)
 	{
 		if (i == f->size() - 1)
-			parfile << (*f)[i] << "\n";
+		{
+			parfile.width(12);
+			parfile << (*f)[i] << "\t";
+		}
 		else
 			parfile << (*f)[i] << ";";
 	}
+
+	// print fitness
+	for (i=0; i < w->size(); ++i)
+	{
+		for (int j=0; j<3; ++j)
+		{
+			if (i == w->size()-1 && j == 2)
+			{
+				parfile.width(12);
+				parfile << (*w)[i][j] << "\t";
+			}
+			else
+				parfile << (*w)[i][j] << ";";
+		}
+	}
+
+	// print inbreeding coefficient
+	parfile << F << "\n";
+
 }
 
 // SiteData::randAllele randomly picks a reference allele
 char SiteData::randAllele ()
 {
-	double rval = unif();
+	double rval = rand_0_1();
 	if (rval <= 0.25)
 		return('A');
 	else if (rval <= 0.5)
@@ -544,7 +624,7 @@ char SiteData::randAllele ()
 char SiteData::pickStrand (int readcode, char* allele)
 {
 	char read;
-	double strand = unif();
+	double strand = rand_0_1();
 	if (readcode == 0)
 		if (strand <= 0.5)
 			read = '.';
@@ -563,10 +643,10 @@ char SiteData::pickStrand (int readcode, char* allele)
 // SiteData::pileRead converts numeric read code to pileup symbol
 char SiteData::pileRead (int obs, char ref, char alt)
 {
-	static char a [] = "CGT";
-	static char c [] = "AGT";
-	static char g [] = "ACT";
-	static char t [] = "ACG";
+	static const char a [] = "CGT";
+	static const char c [] = "AGT";
+	static const char g [] = "ACT";
+	static const char t [] = "ACG";
 	char err;
 
 	if (obs > 1 && obs < 5) // ref change
@@ -580,7 +660,7 @@ char SiteData::pileRead (int obs, char ref, char alt)
 		else
 			err = t[obs - 2];
 
-		if (unif() > 0.5) // decide strand
+		if (rand_0_1() > 0.5) // decide strand
 			err = tolower(err);
 
 	}
@@ -599,7 +679,7 @@ char SiteData::pileRead (int obs, char ref, char alt)
 			err = pickStrand(0);
 		else
 		{
-			if (unif() > 0.5)
+			if (rand_0_1() > 0.5)
 				err = tolower(err);
 		}
 	}
@@ -612,6 +692,8 @@ char SiteData::pileRead (int obs, char ref, char alt)
 	return err;
 }
 
+int SiteData::getIndN() const {return nind;}
+
 // unif draws uniform random number from [0,1]
 double unif ()
 {
@@ -620,6 +702,7 @@ double unif ()
 
 
 // poisson draws random number from Poisson(lambda)
+/* I don't like the way this one is working - switching to std::poisson_distribution with better random number generation
 int poisson (double lamda)
 {
 	double u = unif();
@@ -636,6 +719,7 @@ int poisson (double lamda)
 
 	return x;
 }
+*/
 
 // maxIndex returns the array index corresponding to the first occurrence of the largest element in the array
 int maxIndex (const double arr [], const int size)
