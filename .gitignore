@@ -5,4 +5,4 @@ ngsSimPileup
 *.project
 /Debug/
 /Release/
-/.settings/
+.settings/
