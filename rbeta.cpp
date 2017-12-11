@@ -20,15 +20,16 @@
 #include <cmath>
 #include <cstdio>
 #include <cfloat>
+#include "RandomGenerator.h"
+
 #define expmax	(DBL_MAX_EXP * M_LN2)/* = log(DBL_MAX) */
 
 
-
+/*
 double unif_rand() {
   return((double)rand() / (double)RAND_MAX);
 }
-
-
+*/
 
 double fmax2(double x, double y)
 {
@@ -52,6 +53,7 @@ double rbeta(double aa, double bb)
 {
     double a, b, alpha;
     double r, s, t, u1, u2, v, w, y, z;
+    Random unif_rand; /* Tyler switched to using the c++11 random generators */
 
     int qsame;
     /* FIXME:  Keep Globals (properly) for threading */

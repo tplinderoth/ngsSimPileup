@@ -5,7 +5,6 @@
 
 // FUNCTION PROTOTYPES
 
-double unif_rand();
 double fmax2(double x, double y);
 double fmin2(double x, double y);
 double rbeta(double aa, double bb);
