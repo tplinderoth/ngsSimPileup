@@ -11,10 +11,8 @@
 
 class Random {
 public:
-
 	// PUBLIC FUNCTIONS
 	Random(double lb = 0.0, double ub = 1.0); // initializer
-//	double generate(); // spawn a random real number in range (lb,ub)
 	double operator () ();
 
 	// PUBLIC MEMBERS
@@ -25,6 +23,15 @@ public:
 	double _ub;
 };
 
-
+class NormalGenerator {
+	std::mt19937::result_type seed;
+	std::mt19937 generator;
+	double _min;
+	double _max;
+	std::normal_distribution<double> distribution;
+public:
+	NormalGenerator(double mean, double stddev, double min, double max); // initializer
+	double operator()();
+};
 
 #endif /* RANDOMGENERATOR_H_ */
