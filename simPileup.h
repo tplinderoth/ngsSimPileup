@@ -22,8 +22,8 @@ public:
 
 	// PUBLIC FUNCTIONS
 
-	SiteData (double depth, int n, double avgq, double maxq, double beta_b, int code, unsigned int* randseed = NULL); // constructor
-	double getCoverage (double); // assigns coverage
+	SiteData (double depth, double depthsd, int n, double avgq, double maxq, double beta_b, int code, unsigned int* randseed = NULL); // constructor
+	void setCoverage (double depth, double depth_sddev); // assigns coverage
 	double getInds (int); // assigns number of individuals
 	double getMaxQ (double); // assigns maximum quality score
 	void getBetaPar (double, double, double []); // assigns beta distribution shape parameters alpha and beta
@@ -62,7 +62,8 @@ private:
 
 	// PRIVATE OBJECTS
 
-	double cov; // average individual coverage
+	double cov; // average individual coverage - treated as a normally distributed random variable
+	double covsd; // standard deviation for average individual coverage
 	std::vector<int> _covvec; // sequencing coverage for each individual
 	int nind; // number of individuals
 	double qmax; // max quality score

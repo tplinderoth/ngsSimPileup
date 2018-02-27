@@ -13,7 +13,7 @@
 // FUNCTION DEFINITIONS
 
 // SiteData constructor
-SiteData::SiteData (double depth, int n, double avgq, double maxq, double beta_b, int qoffset, unsigned int* randseed)
+SiteData::SiteData (double depth, double depthsd, int n, double avgq, double maxq, double beta_b, int qoffset, unsigned int* randseed)
 	: name ("chr"),
 	  pos (0),
 	  swapProb(0.0),
@@ -23,7 +23,7 @@ SiteData::SiteData (double depth, int n, double avgq, double maxq, double beta_b
 	if (randseed) seed = *randseed;
 	randomgen.seed(seed);
 
-	cov = getCoverage(depth);
+	setCoverage(depth, depthsd);
 	nind = getInds(n);
 	qmax = getMaxQ(maxq);
 	getBetaPar(avgq, beta_b, betap);
@@ -31,14 +31,20 @@ SiteData::SiteData (double depth, int n, double avgq, double maxq, double beta_b
 	_covvec.resize(nind, 0);
 }
 
-// SiteData::getCoverage assigns coverage
-double SiteData::getCoverage (double depth)
+// SiteData::setCoverage assigns coverage
+void SiteData::setCoverage (double depth, double depth_sddev)
 {
 	if (depth >= 0)
-		return depth;
-	else
-	{
-		fprintf(stderr, "Coverage for SiteData object <= 0\n");
+		cov = depth;
+	else {
+		fprintf(stderr, "Attempt to set negative coverage in call to SiteData::setCoverage\n");
+		exit(EXIT_FAILURE);
+	}
+
+	if (depth_sddev >= 0)
+		covsd = depth_sddev;
+	else {
+		fprintf(stderr, "Attempt to set negative coverage standard deviation in call to SiteData::setCoverage\n");
 		exit(EXIT_FAILURE);
 	}
 }
@@ -125,8 +131,15 @@ std::vector<rdat> SiteData::genSeqData (const double afreq, const double inbreed
 	int ind = 0;
 	int q; // quality score
 	std::vector<rdat> data (nind); // read data
-	static std::poisson_distribution<int> poissdist(cov * copyn);
 	static int prevpos = -1;
+
+	double covmin = 0.0;
+	double covmax = 1.0/0.0;
+	static NormalGenerator normgen(cov, covsd, covmin, covmax);
+	double poismean = 0.0;
+	for (unsigned int k=0; k < copyn; ++k)
+		poismean += normgen();
+	std::poisson_distribution<int> poissdist(poismean);
 
 	if (pdup > 1.0 || pdup < 0.0)
 	{

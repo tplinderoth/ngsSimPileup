@@ -28,7 +28,8 @@ int main (int argc, char** argv)
 	double maxfreq = 1.0; // maximum random alternate allele frequency
 	double minF = 0.0; // minimum inbreeding coefficient
 	double maxF = 1.0; // maximum inbreeding coefficient
-	double coverage = 10.0; // average individual sequencing depth
+	double covmean = 10.0; // mean for normally distributed average individual coverage
+	double covstddev = 1.0; // standard deviation for normally distributed average individual coverage
 	int nind = 0; // number diploid individuals
 	double avgqual = 38.0; // average Phred quality score
 	double maxqual = 41.0; // maximum Phred quality score
@@ -42,12 +43,12 @@ int main (int argc, char** argv)
 
 	if (argc==1)
 	{
-		info (coverage, minfreq, maxfreq, avgqual, maxqual, betab, qcode, seqname, &inbreed, foldsfs);
+		info (covmean, covstddev, minfreq, maxfreq, avgqual, maxqual, betab, qcode, seqname, &inbreed, foldsfs);
 		return 0;
 	}
 
 	// read-in, check, and assign inputs
-	int validin = parseInputs(argc, argv, &altfreq, &admix, minfreq, maxfreq, &fitness, &inbreed, minF, maxF, coverage, nind, avgqual, maxqual, betab, qcode, seqname, theta, nsites, outfile, foldsfs);
+	int validin = parseInputs(argc, argv, &altfreq, &admix, minfreq, maxfreq, &fitness, &inbreed, minF, maxF, covmean, covstddev, nind, avgqual, maxqual, betab, qcode, seqname, theta, nsites, outfile, foldsfs);
 	if (validin > 1)
 		return 0;
 	else if (validin)
@@ -66,7 +67,7 @@ int main (int argc, char** argv)
 	std::cerr << "Dumping results to:\n" << outfile << "\n" << paramsf << "\n";
 
 	// initialize pileup object
-	SiteData sdat(coverage, nind, avgqual, maxqual, betab, qcode);
+	SiteData sdat(covmean, covstddev, nind, avgqual, maxqual, betab, qcode);
 	sdat.name = seqname;
 	sdat.pos = 1;
 
@@ -94,8 +95,8 @@ int main (int argc, char** argv)
 }
 
 int parseInputs (int argc, char** argv, std::vector<double>* altfreq, std::vector<double>* admix, double& minfreq, double& maxfreq,
-		std::vector< Array<double> >* fitness, double* inbreed, double& minF, double& maxF, double& coverage, int& nind,double& avgqual, double& maxqual,
-		double& betab, int& qcode, std::string& seqname, double& theta, unsigned int& nsites, std::string& outfile, bool& fold)
+		std::vector< Array<double> >* fitness, double* inbreed, double& minF, double& maxF, double& coverage, double& covsd,
+		int& nind,double& avgqual, double& maxqual, double& betab, int& qcode, std::string& seqname, double& theta, unsigned int& nsites, std::string& outfile, bool& fold)
 {
 	// read and assign input
 
@@ -109,7 +110,7 @@ int parseInputs (int argc, char** argv, std::vector<double>* altfreq, std::vecto
 		{
 			if ( strcmp(argv[argpos], "-help") == 0 )
 			{
-				info(coverage, minfreq, maxfreq, avgqual, maxqual, betab, qcode, seqname, inbreed, fold, 1);
+				info(coverage, covsd, minfreq, maxfreq, avgqual, maxqual, betab, qcode, seqname, inbreed, fold, 1);
 				return 2;
 			}
 			else if ( strcmp(argv[argpos], "-altfreq") == 0 ) // parse alternate allele frequencies
@@ -168,7 +169,9 @@ int parseInputs (int argc, char** argv, std::vector<double>* altfreq, std::vecto
 			else if ( strcmp(argv[argpos], "-maxF") == 0)
 				maxF = atof(argv[argpos+1]);
 			else if ( strcmp(argv[argpos], "-coverage") == 0 )
-				coverage = atof( argv[argpos + 1]);
+				coverage = atof(argv[argpos + 1]);
+			else if ( strcmp(argv[argpos], "-covstddev") == 0 )
+				covsd = atof(argv[argpos+1]);
 			else if ( strcmp(argv[argpos], "-nind") == 0 )
 				nind = atoi(argv[argpos + 1] );
 			else if ( strcmp( argv[argpos], "-avgqual") == 0 )
@@ -228,9 +231,14 @@ int parseInputs (int argc, char** argv, std::vector<double>* altfreq, std::vecto
 			fprintf(stderr, "\n-minfreq greater than -maxfreq\n");
 			return 1;
 		}
-		if (coverage <= 0)
+		if (coverage < 0)
 		{
-			fprintf(stderr, "\n-coverage must greater than zero\n");
+			fprintf(stderr, "\n-coverage cannot be negative\n");
+			return 1;
+		}
+		if (covsd < 0)
+		{
+			fprintf(stderr, "\n-covstddev cannot be negative\n");
 			return 1;
 		}
 		if (nind <= 0 )
@@ -564,12 +572,13 @@ double alleleFreq (double freq, double lobound, double upbound, SFS* sfs)
 	return f;
 }
 
-void info (const double& cov, const double& minfreq, const double& maxfreq, const double& avgqual, const double& maxqual, const double& beta,
+void info (const double& covmean, const double& covsd, const double& minfreq, const double& maxfreq, const double& avgqual, const double& maxqual, const double& beta,
 		const double& encode, const std::string& name, const double* F, const bool& foldsfs, int help, const char* v)
 {
 	std::cerr << "\nngsSimPileup version " << v << "\n\nInput:\n"
 	<< "\n-nind INT number of diploid individuals"
-	<< "\n-coverage DOUBLE average per-site sequencing depth [" << cov << "]"
+	<< "\n-coverage DOUBLE mean average per-site sequencing depth [" << covmean << "]"
+	<< "\n-covstddev DOUBLE standard deviation of the average per-site sequencing depth [" << covsd << "]"
 	<< "\n-nsites INT number of sites to simulate"
 	<< "\n-minfreq DOUBLE minimum alternate allele frequency [" << minfreq << "]"
 	<< "\n-maxfreq DOUBLE maximum alternate allele frequency [" << maxfreq << "]"
