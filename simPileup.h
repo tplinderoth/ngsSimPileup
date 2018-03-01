@@ -30,8 +30,8 @@ public:
 	int getCode (int); // assigns quality score encoding; offset 33 or 64
 	double getDupProb (std::vector<double>* admixpro); // assigns the probability that a read comes from any duplicate copy of a locus
 	void assignSeqData (const double altfreq, const double inbreedcoef, const Array<double>* fitness); // assigns sequence data to member object seqdat
-	std::vector<rdat> genSeqData (const double afreq, const double inbreedcoef,
-			const Array<double>* fitness, const unsigned int copyn = 1, const double pdup = 1.0); // generates sequencing data for a site
+	std::vector<rdat> genSeqData (const double afreq, const double inbreedcoef, const Array<double>* fitness,
+			const unsigned int copyn = 1, unsigned int copy = 0, std::vector<double>* admix = NULL); // generates sequencing data for a site
 	void getGeno (int genoNum [], double n, const double p, const double F, const Array<double>* w); // generate genotypes based on HWE, inbreeding, and fitness
 	void doParalog (std::vector<double>* altf, const double inbreedcoef, std::vector< Array<double> >* fitness, std::vector<double>* admixpro); // generates reads and quality scores for a site comprised of paralogs
 	void mergeLoci (std::vector<rdat>* locus2); // combines data from another site with seqdat member

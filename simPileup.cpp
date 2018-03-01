@@ -123,14 +123,19 @@ double SiteData::getDupProb (std::vector<double>* admixpro)
 }
 
 // SiteData::genSeqData generates reads and quality scores for a site
-std::vector<rdat> SiteData::genSeqData (const double afreq, const double inbreedcoef, const Array<double>* fitness, const unsigned int copyn, const double pdup)
+std::vector<rdat> SiteData::genSeqData (const double afreq, const double inbreedcoef, const Array<double>* fitness, const unsigned int copyn, unsigned int copy, std::vector<double>* admix)
 {
 	int ind_geno [3] = {}; // # ref homo, # het, # alt homo
 	getGeno(ind_geno, nind, afreq, inbreedcoef, fitness);
 	int readn = 0; // number of reads for an individual
 	int ind = 0;
 	int q; // quality score
+	double allcov = 0; // number of all reads from duplicates before mapping bias
+	static double mappedcov = 0; // number of reads from duplicates that actually map
+	double maxp = 1.0/copyn; // proportion of total reads coming from a single locus if contribution is equal
+	double pdup = admix ? (*admix)[copy] : 1.0; // admix proportion for current locus
 	std::vector<rdat> data (nind); // read data
+	static std::vector<double>::iterator iter;
 	static int prevpos = -1;
 
 	double covmin = 0.0;
@@ -151,17 +156,26 @@ std::vector<rdat> SiteData::genSeqData (const double afreq, const double inbreed
 	{
 		for (int j = 0; j < ind_geno[i]; j++) // go over number of individuals in current genotype
 		{
-			if (prevpos  != pos) _covvec[ind] = poissdist(randomgen);
+			if (prevpos != pos) {
+				mappedcov = 0.0;
+				allcov = poissdist(randomgen);
+				if (copyn > 1) {
+						for(iter = admix->begin(); iter != admix->end(); ++iter)
+							mappedcov += (*iter < maxp) ? *iter * allcov : maxp * allcov;
+					mappedcov = ceil(mappedcov);
+				} else
+					mappedcov = allcov;
+			}
 			if (pdup < 1.0)
 			{
 				readn = 0;
-				for (int k = 0; k < _covvec[ind]; ++k)
+				for (int k = 0; k < mappedcov; ++k)
 				{
 					if (rand_0_1() < pdup) ++readn;
 				}
 			}
 			else
-				readn = _covvec[ind];
+				readn = mappedcov;
 			if (readn == 0) // missing data for individual
 				data[ind].insert( rdat::value_type ( '*', '*') );
 			else
@@ -347,10 +361,10 @@ void SiteData::doParalog (std::vector<double>* altf, const double inbreedcoef, s
 	for (unsigned int i = 0; i < altf->size(); i++)
 	{
 		if (i == 0)
-			seqdat = genSeqData((*altf)[i], inbreedcoef, &(*fitness)[i], altf->size(), (*admixpro)[i]); // get seq data for locus 1
+			seqdat = genSeqData((*altf)[i], inbreedcoef, &(*fitness)[i], altf->size(), i, admixpro); // get seq data for locus 1
 		else
 		{
-			dup = genSeqData((*altf)[i], inbreedcoef, &(*fitness)[i], altf->size(), (*admixpro)[i]); // get seq data for duplicates
+			dup = genSeqData((*altf)[i], inbreedcoef, &(*fitness)[i], altf->size(), i, admixpro); // get seq data for duplicates
 			mergeLoci(&dup); //combine data with seqdat member
 		}
 	}
