@@ -125,6 +125,100 @@ double SiteData::getDupProb (std::vector<double>* admixpro)
 // SiteData::genSeqData generates reads and quality scores for a site
 std::vector<rdat> SiteData::genSeqData (const double afreq, const double inbreedcoef, const Array<double>* fitness, const unsigned int copyn, unsigned int copy, std::vector<double>* admix)
 {
+	// this function version draws a new poisson parameter value for each individual at a site
+
+	int ind_geno [3] = {}; // # ref homo, # het, # alt homo
+	getGeno(ind_geno, nind, afreq, inbreedcoef, fitness);
+	int readn = 0; // number of reads for an individual
+	int ind = 0;
+	int q; // quality score
+	double allcov = 0; // number of all reads from duplicates before mapping bias
+	static double mappedcov = 0; // number of reads from duplicates that actually map
+	double maxp = 1.0/copyn; // proportion of total reads coming from a single locus if contribution is equal
+	double pdup = admix ? (*admix)[copy] : 1.0; // admix proportion for current locus
+	std::vector<rdat> data (nind); // read data
+	static std::vector<double>::iterator iter;
+	static int prevpos = -1;
+
+	double covmin = 0.0;
+	double covmax = 1.0/0.0;
+	static NormalGenerator normgen(cov, covsd, covmin, covmax);
+	double poismean = 0.0;
+
+	if (pdup > 1.0 || pdup < 0.0)
+	{
+		fprintf(stderr, "Invalid admixture proportion in SiteData::genSeqData -> exiting\n");
+		exit(EXIT_FAILURE);
+	}
+
+	for (int i = 0; i < 3; i++) // go over all 3 genotype configurations
+	{
+		for (int j = 0; j < ind_geno[i]; j++) // go over number of individuals in current genotype
+		{
+			if (prevpos != pos) {
+				poismean = 0.0;
+
+				for (unsigned int k=0; k < copyn; ++k)
+					poismean += normgen();
+
+				std::poisson_distribution<int> poissdist(poismean);
+				mappedcov = 0.0;
+				allcov = poissdist(randomgen);
+				if (copyn > 1) {
+						for(iter = admix->begin(); iter != admix->end(); ++iter)
+							mappedcov += (*iter < maxp) ? *iter * allcov : maxp * allcov;
+					mappedcov = ceil(mappedcov);
+				} else
+					mappedcov = allcov;
+			}
+			if (pdup < 1.0)
+			{
+				readn = 0;
+				for (int k = 0; k < mappedcov; ++k)
+				{
+					if (rand_0_1() < pdup) ++readn;
+				}
+			}
+			else
+				readn = mappedcov;
+			if (readn == 0) // missing data for individual
+				data[ind].insert( rdat::value_type ( '*', '*') );
+			else
+			{
+				for (int k = 0; k < readn; k++) // assign reads and quality scores
+				{
+					q = floor(rbeta(betap[0], betap[1]) * qmax + 0.5);
+
+					if (i == 0) // ref homo
+						data[ind].insert( rdat::value_type ( q, 0 ) );
+					else if (i == 2) // ref alt
+						data[ind].insert( rdat::value_type ( q, 1 ) );
+					else // het
+					{
+						if (rand_0_1() < 0.5)
+							data[ind].insert( rdat::value_type ( q, 0 ) );
+						else
+							data[ind].insert( rdat::value_type ( q, 1 ) );
+					}
+				}
+			}
+
+			ind++;
+		}
+	}
+
+	doError(&data); // introduce sequencing errors
+	prevpos = pos;
+
+	return data;
+}
+
+/*
+// SiteData::genSeqData generates reads and quality scores for a site
+std::vector<rdat> SiteData::genSeqData (const double afreq, const double inbreedcoef, const Array<double>* fitness, const unsigned int copyn, unsigned int copy, std::vector<double>* admix)
+{
+	//this function version use the same poisson parameter value to simulate the coverage for each individual at a site
+
 	int ind_geno [3] = {}; // # ref homo, # het, # alt homo
 	getGeno(ind_geno, nind, afreq, inbreedcoef, fitness);
 	int readn = 0; // number of reads for an individual
@@ -207,6 +301,7 @@ std::vector<rdat> SiteData::genSeqData (const double afreq, const double inbreed
 
 	return data;
 }
+*/
 
 // SiteData::getGeno calculates genotype numbers based on HWE
 void SiteData::getGeno (int genoNum [], double n, const double p, const double F, const Array<double>* w)

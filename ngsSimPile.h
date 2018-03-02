@@ -7,7 +7,7 @@
 #include "generalUtils.h"
 #include "SFS.h"
 
-const char* version = "0.3.0"; // version 28 February 2018
+const char* version = "0.3.1"; // version 1 March 2018
 
 // FUNCTION PROTOTYPES
 
