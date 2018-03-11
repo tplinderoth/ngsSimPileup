@@ -122,6 +122,7 @@ double SiteData::getDupProb (std::vector<double>* admixpro)
 	return prob;
 }
 
+/*
 // SiteData::genSeqData generates reads and quality scores for a site
 std::vector<rdat> SiteData::genSeqData (const double afreq, const double inbreedcoef, const Array<double>* fitness, const unsigned int copyn, unsigned int copy, std::vector<double>* admix)
 {
@@ -212,8 +213,9 @@ std::vector<rdat> SiteData::genSeqData (const double afreq, const double inbreed
 
 	return data;
 }
+*/
 
-/*
+
 // SiteData::genSeqData generates reads and quality scores for a site
 std::vector<rdat> SiteData::genSeqData (const double afreq, const double inbreedcoef, const Array<double>* fitness, const unsigned int copyn, unsigned int copy, std::vector<double>* admix)
 {
@@ -301,7 +303,7 @@ std::vector<rdat> SiteData::genSeqData (const double afreq, const double inbreed
 
 	return data;
 }
-*/
+
 
 // SiteData::getGeno calculates genotype numbers based on HWE
 void SiteData::getGeno (int genoNum [], double n, const double p, const double F, const Array<double>* w)
