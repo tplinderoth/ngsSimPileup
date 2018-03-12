@@ -237,9 +237,7 @@ std::vector<rdat> SiteData::genSeqData (const double afreq, const double inbreed
 	double covmin = 0.0;
 	double covmax = 1.0/0.0;
 	static NormalGenerator normgen(cov, covsd, covmin, covmax);
-	double poismean = 0.0;
-	for (unsigned int k=0; k < copyn; ++k)
-		poismean += normgen();
+	double poismean = copyn*normgen();
 	std::poisson_distribution<int> poissdist(poismean);
 
 	if (pdup > 1.0 || pdup < 0.0)
