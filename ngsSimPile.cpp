@@ -22,6 +22,7 @@ int main (int argc, char** argv)
 	// declare and initialize variables
 	std::vector<double> altfreq; // alternate allele frequencies for loci
 	std::vector<double> admix; // probability that read comes from locus
+	double deletionf = 0.0; // CNV delection frequency
 	double inbreed = 0.0; // inbreeding coefficient for locus
 	std::vector< Array<double> > fitness; // relative fitness values for [AA, Aa, aa] genotypes
 	double minfreq = 0.0; // minimum random alternate allele frequency
@@ -43,12 +44,13 @@ int main (int argc, char** argv)
 
 	if (argc==1)
 	{
-		info (covmean, covstddev, minfreq, maxfreq, avgqual, maxqual, betab, qcode, seqname, &inbreed, foldsfs);
+		info (covmean, covstddev, minfreq, maxfreq, avgqual, maxqual, betab, qcode, seqname, &inbreed, foldsfs, deletionf);
 		return 0;
 	}
 
 	// read-in, check, and assign inputs
-	int validin = parseInputs(argc, argv, &altfreq, &admix, minfreq, maxfreq, &fitness, &inbreed, minF, maxF, covmean, covstddev, nind, avgqual, maxqual, betab, qcode, seqname, theta, nsites, outfile, foldsfs);
+	int validin = parseInputs(argc, argv, &altfreq, &admix, minfreq, maxfreq, &fitness, &inbreed, minF, maxF, covmean, covstddev, nind,
+			avgqual, maxqual, betab, qcode, seqname, theta, nsites, outfile, foldsfs, deletionf);
 	if (validin > 1)
 		return 0;
 	else if (validin)
@@ -81,7 +83,7 @@ int main (int argc, char** argv)
 	else // simulate normal sites
 	{
 		fprintf(stderr, "simulating %u non-paralogous sites\n", nsites);
-		simNormal(nsites, altfreq[0], minfreq, maxfreq, &admix, inbreed, &fitness, &sdat, pileout, parout, foldsfs);
+		simNormal(nsites, altfreq[0], minfreq, maxfreq, &admix, inbreed, &fitness, &sdat, pileout, parout, foldsfs, deletionf);
 	}
 
 	// prepare to exit program
@@ -96,7 +98,7 @@ int main (int argc, char** argv)
 
 int parseInputs (int argc, char** argv, std::vector<double>* altfreq, std::vector<double>* admix, double& minfreq, double& maxfreq,
 		std::vector< Array<double> >* fitness, double* inbreed, double& minF, double& maxF, double& coverage, double& covsd,
-		int& nind,double& avgqual, double& maxqual, double& betab, int& qcode, std::string& seqname, double& theta, unsigned int& nsites, std::string& outfile, bool& fold)
+		int& nind,double& avgqual, double& maxqual, double& betab, int& qcode, std::string& seqname, double& theta, unsigned int& nsites, std::string& outfile, bool& fold, double& deletionf)
 {
 	// read and assign input
 
@@ -192,6 +194,8 @@ int parseInputs (int argc, char** argv, std::vector<double>* altfreq, std::vecto
 				outfile = argv[argpos + 1];
 			else if ( strcmp(argv[argpos], "-foldsfs") == 0)
 				fold = atoi(argv[argpos + 1]);
+			else if ( strcmp(argv[argpos], "-cnvdel") == 0)
+				deletionf = atof(argv[argpos+1]);
 			else
 			{
 				fprintf(stderr, "\nUnknown argument: %s\n", argv[argpos]);
@@ -294,6 +298,17 @@ int parseInputs (int argc, char** argv, std::vector<double>* altfreq, std::vecto
 				fprintf(stderr, "\n-fold must be 0 or 1\n");
 				return 1;
 			}
+		}
+		if (deletionf > 1.0 || deletionf < 0.0) {
+			fprintf(stderr,"\n-cnvdel out of range [0,1]\n");
+			return 1;
+		}
+		if (deletionf + minfreq > 1) {
+			fprintf(stderr, "Sum of allele frequencies > 1: lower -cnvdel or -minfreq\n");
+			return 1;
+		}
+		if (deletionf + maxfreq > 1) {
+			fprintf(stderr, "Sum of deletion and maximum SNP frequency > 1: consider lowering -cnvdel or -maxfreq\n");
 		}
 
 		return 0;
@@ -498,7 +513,7 @@ int setDefaultVals (std::vector<double>* admix, std::vector<double>* altfreq, do
 }
 
 void simNormal (unsigned int nsites, double altfreq, double lbound, double ubound, std::vector<double>* mvec, const double inbreed,
-		std::vector< Array<double> >* fitness, SiteData* dat, std::fstream& seqfile, std::fstream& parfile, bool foldsfs)
+		std::vector< Array<double> >* fitness, SiteData* dat, std::fstream& seqfile, std::fstream& parfile, bool foldsfs, double delcnvf)
 {
 	// ADD EXCEPTION HANDLING
 	std::vector<double> f (1);
@@ -506,8 +521,8 @@ void simNormal (unsigned int nsites, double altfreq, double lbound, double uboun
 
 	for (unsigned int i = 0; i < nsites; ++i)
 	{
-		f[0] = alleleFreq(altfreq, lbound, ubound, &sfs);
-		dat->assignSeqData(f[0], inbreed, &(*fitness)[0]);
+		f[0] = alleleFreq(altfreq, lbound, ubound, &sfs, delcnvf);
+		dat->assignSeqData(f[0], inbreed, &(*fitness)[0], delcnvf);
 		dat->printSite(seqfile, dat->code);
 		dat->printParam(parfile, &f, mvec, inbreed, fitness); // print to parameter file
 		dat->pos++;
@@ -533,15 +548,18 @@ void simParalog (unsigned int nsites, std::vector<double>* fvec, double lbound, 
 	}
 }
 
-double alleleFreq (double freq, double lobound, double upbound, SFS* sfs)
+double alleleFreq (double freq, double lobound, double upbound, SFS* sfs, double cnvf)
 {
 	// ADD EXCEPTION HANDLING
 	double f;
 	int sample_thresh = 1000;
 	int n = 0;
 
-	if (freq == 82.0)
-		f = decimalUnifBound(lobound, upbound);
+	if (freq == 82.0) {
+		do {
+			f = decimalUnifBound(lobound, upbound);
+		} while (f+cnvf > 1);
+	}
 	else if (freq == 83.0)
 	{
 		if (upbound == lobound)
@@ -573,7 +591,7 @@ double alleleFreq (double freq, double lobound, double upbound, SFS* sfs)
 }
 
 void info (const double& covmean, const double& covsd, const double& minfreq, const double& maxfreq, const double& avgqual, const double& maxqual, const double& beta,
-		const double& encode, const std::string& name, const double* F, const bool& foldsfs, int help, const char* v)
+		const double& encode, const std::string& name, const double* F, const bool& foldsfs, double cnvdel, int help, const char* v)
 {
 	std::cerr << "\nngsSimPileup version " << v << "\n\nInput:\n"
 	<< "\n-nind INT number of diploid individuals"
@@ -583,6 +601,7 @@ void info (const double& covmean, const double& covsd, const double& minfreq, co
 	<< "\n-minfreq DOUBLE minimum alternate allele frequency [" << minfreq << "]"
 	<< "\n-maxfreq DOUBLE maximum alternate allele frequency [" << maxfreq << "]"
 	<< "\n-altfreq DOUBLE|R|S vector of alternate allele frequencies for paralogous sites ('R': random frequency, F: draw frequency from SFS)"
+	<< "\n-cnvdel DOUBLE frequency of deletion CNV [" << cnvdel << "]"
 	<< "\n-foldsfs 0|1 draw allele frequencies from unfolded (0) or folded (1) SFS [" << foldsfs << "]"
 	<< "\n-admix DOUBLE vector of probabilities that a read comes from the locus with given alternate allele frequency [1/number_copies]"
 	<< "\n-inbreed DOUBLE inbreeding coefficient (F) [" << *F << "]"

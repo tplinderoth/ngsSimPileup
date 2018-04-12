@@ -217,12 +217,13 @@ std::vector<rdat> SiteData::genSeqData (const double afreq, const double inbreed
 
 
 // SiteData::genSeqData generates reads and quality scores for a site
-std::vector<rdat> SiteData::genSeqData (const double afreq, const double inbreedcoef, const Array<double>* fitness, const unsigned int copyn, unsigned int copy, std::vector<double>* admix)
+std::vector<rdat> SiteData::genSeqData (const double afreq, const double inbreedcoef, const Array<double>* fitness, const unsigned int copyn, unsigned int copy, std::vector<double>* admix, double cnvf)
 {
 	//this function version use the same poisson parameter value to simulate the coverage for each individual at a site
 
-	int ind_geno [3] = {}; // # ref homo, # het, # alt homo
-	getGeno(ind_geno, nind, afreq, inbreedcoef, fitness);
+	int ind_geno [4] = {0, 0, 0, 0}; // # ref homo, # het, # alt homo, # missing genotypes
+	int cnvhet [2] = {0, 0}; // # ref/deletion, # alt/deletion
+	getGeno(ind_geno, nind, afreq, inbreedcoef, fitness, cnvhet, cnvf);
 	int readn = 0; // number of reads for an individual
 	int ind = 0;
 	int q; // quality score
@@ -246,10 +247,16 @@ std::vector<rdat> SiteData::genSeqData (const double afreq, const double inbreed
 		exit(EXIT_FAILURE);
 	}
 
-	for (int i = 0; i < 3; i++) // go over all 3 genotype configurations
+	for (int i = 0; i < 4; i++) // go over all 3 genotype + missing genotype configurations
 	{
 		for (int j = 0; j < ind_geno[i]; j++) // go over number of individuals in current genotype
 		{
+			if (i == 3) { // missing genotype
+				data[ind].insert( rdat::value_type ( '*', '*') );
+				++ind;
+				continue;
+
+			}
 			if (prevpos != pos) {
 				mappedcov = 0.0;
 				allcov = poissdist(randomgen);
@@ -270,6 +277,13 @@ std::vector<rdat> SiteData::genSeqData (const double afreq, const double inbreed
 			}
 			else
 				readn = mappedcov;
+
+			// account for cnv deletion heterozygotes
+			if (cnvf) {
+				if ( (i == 0 && j < cnvhet[0]) || (i == 2 && j < cnvhet[1]) )
+					readn = static_cast<double>(readn)/2.0;
+			}
+
 			if (readn == 0) // missing data for individual
 				data[ind].insert( rdat::value_type ( '*', '*') );
 			else
@@ -292,7 +306,7 @@ std::vector<rdat> SiteData::genSeqData (const double afreq, const double inbreed
 				}
 			}
 
-			ind++;
+			++ind;
 		}
 	}
 
@@ -304,9 +318,11 @@ std::vector<rdat> SiteData::genSeqData (const double afreq, const double inbreed
 
 
 // SiteData::getGeno calculates genotype numbers based on HWE
-void SiteData::getGeno (int genoNum [], double n, const double p, const double F, const Array<double>* w)
+void SiteData::getGeno (int genoNum [], double n, const double p, const double F, const Array<double>* w, int ncnv [], double cnvf)
 {
 	// ADD EXCEPTION HANDLING FOR CHECKING ALLELE FREQ, INBREEDING COEF, FITNESS
+	// genoNum[3]: number missing genotypes
+	// ncnv: number of ref/deletion, alt/deletion homozygotes
 
 	if (p < 0.0 || p > 1.0)
 	{
@@ -337,34 +353,87 @@ void SiteData::getGeno (int genoNum [], double n, const double p, const double F
 		exit(EXIT_FAILURE);
 	}
 
+	if (cnvf > 1.0 || cnvf < 0.0) {
+		fprintf(stderr, "CNV deletion frequency out of [0,1] range in call to SiteData::genGeno -> exiting\n");
+		exit(EXIT_FAILURE);
+	}
 
-	double q = 1.0 - p;
+	if (cnvf + p > 1) {
+		fprintf(stderr, "Sum of allele frequencies > 1 in call to SiteData::genGeno -> exiting\n");
+		exit(EXIT_FAILURE);
+	}
 
-	// genotype frequencies accounting for inbreeding and fitness
-	double paa = (*w)[2] * ( q * q * (1.0 - F) + q * F );
-	double pAa = (*w)[1] * ( 2.0 * p * q * (1.0 - F) );
-	double pAA = (*w)[0] * ( p * p * (1.0 - F) + p * F );
+	double q = 0.0; // ref allele freq
+	double paa;
+	double pAa;
+	double pAA;
+	double pmiss;
+	double wbar;
+	double rhomo;
+	double het;
+	double ahomo;
+	double missing;
 
-	// calculate average fitness and scale the genotype frequencies
-	double wbar = paa + pAa + pAA;
-	paa /= wbar;
-	pAa /= wbar;
-	pAA /= wbar;
+	if (!cnvf) {
+		q = 1.0 - p;
 
-	// expected number of each genotype
-	double rhomo = n * paa;
-	double het = n * pAa;
-	double ahomo = n * pAA;
+		// genotype frequencies accounting for inbreeding and fitness
+		paa = (*w)[0] * ( q * q * (1.0 - F) + q * F );
+		pAa = (*w)[1] * ( 2.0 * p * q * (1.0 - F) );
+		pAA = (*w)[2] * ( p * p * (1.0 - F) + p * F );
+
+		// calculate average fitness and scale the genotype frequencies
+		wbar = paa + pAa + pAA;
+		paa /= wbar;
+		pAa /= wbar;
+		pAA /= wbar;
+
+		// expected number of each genotype
+		rhomo = n * paa;
+		het = n * pAa;
+		ahomo = n * pAA;
+
+		genoNum[3] = 0;
+
+	} else {
+		q = 1.0 - (p + cnvf);
+
+		// genotype frequencies given p=alt allele freq, q=ref allele freq, r= CNV deletion allele freq
+		paa = q*q + 2*q*(cnvf);
+		pAa = 2*p*q;
+		pAA = p*p + 2*p*cnvf;
+		pmiss = 1.0 - (paa + pAa + pAA);
+
+		// expected number of apparent genotypes (apparent because the sequencing data for deletion heterozygotes makes them appear homozygous)
+		rhomo = n * paa;
+		het = n * pAa;
+		ahomo = n * pAA;
+		missing = n * pmiss;
+
+		genoNum[3] = static_cast<int>(floor(missing + 0.5) );
+		ncnv[0] = round(n*2.0*q*cnvf);
+		ncnv[1] = round(n*2.0*p*cnvf);
+	}
 
 	genoNum[0] = static_cast<int>( floor(rhomo + 0.5) );
 	genoNum[1] = static_cast<int>( floor(het + 0.5) );
 	genoNum[2] = static_cast<int>( floor(ahomo + 0.5) );
 
 	// ensure that the sum of genotype numbers equals the sample size
-	int genoSum = genoNum[0] + genoNum[1] + genoNum[2];
-
+	int genoSum = genoNum[0] + genoNum[1] + genoNum[2] + genoNum[3];
 	if (genoSum == n)
 		return;
+
+	if (cnvf) {
+		do {
+			// add or subtract number of missing individuals
+			if (genoSum > n)
+				--genoNum[3];
+			else
+				++genoNum[3];
+			genoSum = genoNum[0] + genoNum[1] + genoNum[2] + genoNum[3];
+		} while (genoSum != n);
+	}
 	else
 	{
 		double diff [3] = {};
@@ -430,10 +499,10 @@ void SiteData::getGeno (int genoNum [], double n, const double p, const double F
 }
 
 // SiteData::assignSeqData assigns sequence data to member object seqdat
-void SiteData::assignSeqData (const double altfreq, const double inbreedcoef, const Array<double>* fitness)
+void SiteData::assignSeqData (const double altfreq, const double inbreedcoef, const Array<double>* fitness, double cnvf)
 {
 	seqdat.resize(nind);
-	seqdat = genSeqData(altfreq, inbreedcoef, fitness);
+	seqdat = genSeqData(altfreq, inbreedcoef, fitness, 1, 0, NULL, cnvf);
 }
 
 // SiteData::doParalog generates reads and quality scores for a site comprised of paralogs - see simPileup.h
